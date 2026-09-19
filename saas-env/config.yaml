@@ -1,0 +1,408 @@
+# SaaS Environment Configuration
+# This file defines the simulated SaaS application structure.
+# Changing this changes the attack surface — agents don't read this
+# to find bugs, they discover them through exploration.
+
+app:
+  name: "Nexus Workspace"
+  description: "A collaborative workspace SaaS"
+  version: "1.0.0"
+
+# ─────────────────────────────────────────────
+# Integration Configuration
+# Each integration has:
+#   enabled: whether it's active
+#   config: integration-specific settings
+#   permissions: what roles can access it
+# ─────────────────────────────────────────────
+
+integrations:
+  # ── OAuth / SSO ──────────────────────────
+  oauth:
+    enabled: true
+    provider: "google"
+    config:
+      client_id: "nexus-client-id-12345"
+      client_secret: "nexus-secret-abcde"
+      redirect_uri: "http://localhost:8000/auth/callback"
+      scopes:
+        - "openid"
+        - "profile"
+        - "email"
+        - "https://www.googleapis.com/auth/drive.readonly"
+    # Token storage location (for simulation — don't do this in prod!)
+    token_storage: "memory"
+
+  # ── Webhooks ─────────────────────────────
+  webhooks:
+    enabled: true
+    config:
+      # Webhook endpoint configuration
+      endpoint: "/api/v1/webhooks"
+      secret: "webhook-secret-xyz789"
+      # Events that trigger webhooks
+      events:
+        - "file.uploaded"
+        - "user.created"
+        - "project.updated"
+        - "billing.changed"
+        - "integration.connected"
+      # Outgoing webhook destinations
+      destinations:
+        - name: "slack-notifier"
+          url: "http://localhost:8000/api/v1/ext/slack"
+          events: ["file.uploaded", "user.created"]
+        - name: "analytics-collector"
+          url: "http://localhost:8000/api/v1/ext/analytics"
+          events: ["project.updated"]
+        - name: "audit-logger"
+          url: "http://localhost:8000/api/v1/ext/audit"
+          events: ["billing.changed", "integration.connected"]
+      # Include tokens in webhook payload (VULNERABILITY: token leakage)
+      include_auth_in_payload: true
+
+  # ── API Keys ─────────────────────────────
+  api_keys:
+    enabled: true
+    config:
+      endpoint: "/api/v1/keys"
+      # API key formats supported
+      formats:
+        - "Bearer token"
+        - "X-API-Key header"
+        - "Query param (key=...)"
+      # Key scopes
+      scopes:
+        - "read:files"
+        - "write:files"
+        - "read:projects"
+        - "write:projects"
+        - "read:users"
+        - "admin"
+      # Auto-generate keys on user creation
+      auto_generate: true
+
+  # ── File Storage ──────────────────────────
+  file_storage:
+    enabled: true
+    config:
+      provider: "local"
+      upload_endpoint: "/api/v1/files/upload"
+      download_endpoint: "/api/v1/files/{file_id}"
+      max_file_size_mb: 50
+      allowed_extensions:
+        - "pdf"
+        - "docx"
+        - "xlsx"
+        - "png"
+        - "jpg"
+        - "txt"
+      # Upload directory (relative to project root)
+      storage_path: "./storage/uploads"
+      # Generate public URLs for files (VULNERABILITY: IDOR on file access)
+      public_url_prefix: "http://localhost:8000/storage"
+      # Include file metadata in response
+      include_metadata: true
+
+  # ── Stripe / Payments ─────────────────────
+  stripe:
+    enabled: true
+    config:
+      endpoint: "/api/v1/billing"
+      webhook_endpoint: "/api/v1/billing/webhook"
+      plans:
+        - id: "free"
+          name: "Free"
+          price: 0
+          features:
+            - "3 projects"
+            - "1GB storage"
+            - "Basic support"
+        - id: "pro"
+          name: "Pro"
+          price: 2999  # cents
+          features:
+            - "Unlimited projects"
+            - "100GB storage"
+            - "Priority support"
+            - "API access"
+        - id: "enterprise"
+          name: "Enterprise"
+          price: 9999  # cents
+          features:
+            - "Everything in Pro"
+            - "SSO"
+            - "Audit logs"
+            - "Custom integrations"
+      # Stripe webhook secret
+      webhook_secret: "stripe-whsec-test123"
+
+  # ── Email / Notifications ─────────────────
+  email:
+    enabled: true
+    config:
+      provider: "sendgrid"
+      api_key: "SG.fake-sendgrid-key-12345"
+      from_address: "noreply@nexusworkspace.io"
+      from_name: "Nexus Workspace"
+      templates:
+        welcome: "d-abc123welcome"
+        invoice: "d-def456invoice"
+        alert: "d-ghi789alert"
+      # Email tracking enabled (VULNERABILITY: tracking pixel leaks IP)
+      track_opens: true
+      track_clicks: true
+
+  # ── Background Jobs ────────────────────────
+  background_jobs:
+    enabled: true
+    config:
+      provider: "in-memory"
+      endpoint: "/api/v1/jobs"
+      # Job types available
+      job_types:
+        - "file.process"
+        - "report.generate"
+        - "email.send"
+        - "backup.create"
+        - "integration.sync"
+      # Job queue settings
+      max_concurrent: 5
+      default_timeout_seconds: 300
+      # Store job results (VULNERABILITY: results accessible without auth)
+      results_publicly_accessible: true
+
+# ─────────────────────────────────────────────
+# Role-Based Access Control (RBAC)
+# ─────────────────────────────────────────────
+roles:
+  guest:
+    description: "Unauthenticated user"
+    permissions:
+      - "auth.login"
+      - "auth.register"
+      - "auth.forgot_password"
+      - "files.view_public"
+    max_file_size_mb: 5
+
+  user:
+    description: "Standard registered user"
+    inherits: "guest"
+    permissions:
+      - "files.upload"
+      - "files.download_own"
+      - "files.delete_own"
+      - "projects.create"
+      - "projects.view_own"
+      - "projects.update_own"
+      - "projects.delete_own"
+      - "integrations.connect"
+      - "integrations.view"
+      - "billing.view_own"
+      - "api_keys.create"
+      - "api_keys.view_own"
+    max_file_size_mb: 50
+
+  admin:
+    description: "Administrator"
+    inherits: "user"
+    permissions:
+      - "users.manage"
+      - "projects.view_all"
+      - "projects.delete_any"
+      - "files.view_any"
+      - "files.delete_any"
+      - "integrations.manage"
+      - "billing.manage"
+      - "api_keys.view_all"
+      - "audit.view"
+      - "settings.manage"
+      - "admin.access"
+
+  system:
+    description: "System-level access (internal only)"
+    permissions:
+      - "*"  # Full access
+
+# ─────────────────────────────────────────────
+# API Endpoints (what the agents will explore)
+# ─────────────────────────────────────────────
+api_endpoints:
+  - path: "/auth/login"
+    method: "POST"
+    required_role: "guest"
+  - path: "/auth/register"
+    method: "POST"
+    required_role: "guest"
+  - path: "/auth/oauth/initiate"
+    method: "POST"
+    required_role: "guest"
+  - path: "/auth/oauth/callback"
+    method: "GET"
+    required_role: "guest"
+  - path: "/auth/refresh"
+    method: "POST"
+    required_role: "user"
+  - path: "/users/me"
+    method: "GET"
+    required_role: "user"
+  - path: "/users/{user_id}"
+    method: "GET"
+    required_role: "user"
+  - path: "/users"
+    method: "GET"
+    required_role: "admin"
+  - path: "/files/upload"
+    method: "POST"
+    required_role: "user"
+  - path: "/files/{file_id}"
+    method: "GET"
+    required_role: "user"
+  - path: "/files/{file_id}"
+    method: "DELETE"
+    required_role: "user"
+  - path: "/projects"
+    method: "GET"
+    required_role: "user"
+  - path: "/projects"
+    method: "POST"
+    required_role: "user"
+  - path: "/projects/{project_id}"
+    method: "GET"
+    required_role: "user"
+  - path: "/projects/{project_id}"
+    method: "PUT"
+    required_role: "user"
+  - path: "/integrations"
+    method: "GET"
+    required_role: "user"
+  - path: "/integrations/connect"
+    method: "POST"
+    required_role: "user"
+  - path: "/integrations/{integration_id}"
+    method: "GET"
+    required_role: "user"
+  - path: "/api-keys"
+    method: "GET"
+    required_role: "user"
+  - path: "/api-keys"
+    method: "POST"
+    required_role: "user"
+  - path: "/billing"
+    method: "GET"
+    required_role: "user"
+  - path: "/billing/subscribe"
+    method: "POST"
+    required_role: "user"
+  - path: "/webhooks"
+    method: "POST"
+    required_role: "admin"
+  - path: "/jobs"
+    method: "GET"
+    required_role: "user"
+  - path: "/jobs"
+    method: "POST"
+    required_role: "user"
+  - path: "/jobs/{job_id}"
+    method: "GET"
+    required_role: "user"
+  - path: "/admin/audit"
+    method: "GET"
+    required_role: "admin"
+  - path: "/admin/settings"
+    method: "GET"
+    required_role: "admin"
+  - path: "/internal/api-keys"
+    method: "GET"
+    required_role: "system"
+
+# ─────────────────────────────────────────────
+# Vulnerability Seeds
+# These are intentionally planted weaknesses
+# that emerge from integration interactions.
+# The agents discover these through exploration,
+# not by reading this file.
+# ─────────────────────────────────────────────
+
+vulnerability_seeds:
+  # V1: OAuth Token in Webhook URL
+  # When webhooks fire, they include the OAuth token in the URL query params
+  # An attacker who receives the webhook can extract this token
+  - id: "V1"
+    name: "OAuth Token Leakage via Webhook"
+    integrations_affected: ["oauth", "webhooks"]
+    severity: "high"
+    description: "OAuth tokens are included in webhook payloads as URL parameters"
+
+  # V2: File ID Enumeration (IDOR)
+  # File IDs are predictable (sequential integers)
+  # Anyone with a file ID can download any file
+  - id: "V2"
+    name: "Insecure Direct Object Reference on Files"
+    integrations_affected: ["file_storage"]
+    severity: "medium"
+    description: "File IDs are sequential and not tied to user ownership checks"
+
+  # V3: API Key Scope Escalation
+  # API keys with limited scopes can be upgraded
+  - id: "V3"
+    name: "API Key Privilege Escalation"
+    integrations_affected: ["api_keys"]
+    severity: "high"
+    description: "API key scopes can be modified after creation"
+
+  # V4: Background Job Result Injection
+  # Job results are stored with predictable IDs and accessible without auth
+  - id: "V4"
+    name: "Job Result Information Disclosure"
+    integrations_affected: ["background_jobs"]
+    severity: "medium"
+    description: "Job results are stored with sequential IDs and no auth check"
+
+  # V5: Webhook Replay Attack
+  # Webhooks can be replayed with stolen tokens
+  - id: "V5"
+    name: "Webhook Replay Attack"
+    integrations_affected: ["webhooks", "oauth"]
+    severity: "high"
+    description: "Webhook endpoints don't validate timestamps or use nonces"
+
+  # V6: Stripe Webhook Signature Bypass
+  # In dev mode, webhook signature validation is skipped
+  - id: "V6"
+    name: "Stripe Webhook Signature Bypass"
+    integrations_affected: ["stripe"]
+    severity: "critical"
+    description: "Development mode skips signature validation on Stripe webhooks"
+
+  # V7: File Upload Path Traversal
+  # File names aren't sanitized — can write outside upload directory
+  - id: "V7"
+    name: "Path Traversal via File Upload"
+    integrations_affected: ["file_storage"]
+    severity: "critical"
+    description: "Uploaded filenames can contain ../ to escape the storage directory"
+
+  # V8: Email Tracking Pixel Exfiltration
+  # Email open tracking leaks recipient IP
+  - id: "V8"
+    name: "Email Tracking Pixel Information Leak"
+    integrations_affected: ["email"]
+    severity: "low"
+    description: "Tracking pixels in emails expose recipient IP addresses"
+
+  # V9: OAuth State Parameter Not Validated
+  # CSRF attack possible on OAuth flow
+  - id: "V9"
+    name: "OAuth CSRF Vulnerability"
+    integrations_affected: ["oauth"]
+    severity: "medium"
+    description: "OAuth state parameter is not validated, enabling CSRF attacks"
+
+  # V10: API Key in URL Query Parameter
+  # API keys in query params get logged and cached
+  - id: "V10"
+    name: "API Key Exposure in URL"
+    integrations_affected: ["api_keys"]
+    severity: "medium"
+    description: "API keys passed in query parameters are exposed in logs and browser history"
