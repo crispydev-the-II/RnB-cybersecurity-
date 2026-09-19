@@ -1,14 +1,19 @@
 """
 run_agent.py -- Main orchestrator
 Runs all 4 stages in sequence, produces the final attack report.
-Usage: python run_agent.py
+Usage:
+  python run_agent.py                  # red agent only (with dashboard)
+  python run_agent.py --no-dashboard  # red agent, no dashboard
+  python run_agent.py --red-blue      # run both red and blue agents together
 """
 
 import os
 import sys
 import json
 import time
+import argparse
 import importlib.util
+import threading
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -78,12 +83,17 @@ def print_summary(data):
         print("  Target not yet reached.")
 
 
-def main():
-    # Start the live dashboard in a background thread
-    import threading
+def _launch_dashboard():
+    """Start the live dashboard in a background thread."""
     from dashboard import run_dashboard
     dash_thread = threading.Thread(target=run_dashboard, daemon=True)
     dash_thread.start()
+
+
+def run_red(dashboard=True):
+    """Run the red agent (all 4 stages)."""
+    if dashboard:
+        _launch_dashboard()
 
     print()
     print()
@@ -93,8 +103,9 @@ def main():
     print(f"  Target: {os.getenv('TARGET_ENDPOINT', '/internal/api-keys')}")
     print(f"  Base:   {os.getenv('BASE_URL', 'http://localhost:8000')}")
     print(f"  Output: {OUTPUT_DIR}/")
-    print()
-    print("  [Live dashboard active -- see separate panel]")
+    if dashboard:
+        print()
+        print("  [Live dashboard active -- see separate panel]")
     print()
 
     start_time = time.time()
@@ -135,6 +146,49 @@ def main():
     with open(report_path, "w") as f:
         json.dump(s4, f, indent=2)
     print(f"\n  Final report: {report_path}")
+
+    return s4
+
+
+def run_red_blue():
+    """Run both red and blue agents simultaneously."""
+    print()
+    print("+============================================================+")
+    print("|            NEXUS RED vs BLUE -- LIVE ENGAGEMENT            |")
+    print("+============================================================+")
+    print()
+    print("  Red agent:  Probing, chaining, escalating")
+    print("  Blue agent: Monitoring, detecting, patching")
+    print("  Dashboard:  Live view of both agents")
+    print()
+
+    # Start blue agent in daemon mode (patches as it detects)
+    from run_blue import run_daemon
+    from blue import BlueAgent
+    blue = BlueAgent(auto_patch=True, audit_interval=5)
+
+    # Run red agent in background thread, blue in foreground
+    red_thread = threading.Thread(target=run_red, args=(True,), daemon=True)
+    red_thread.start()
+
+    print("  [Both agents running -- dashboard active]")
+    print("  Press Ctrl+C to stop.")
+    print()
+
+    # Blue daemon blocks; when it exits, red is done
+    run_daemon(blue)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Nexus Red Agent")
+    parser.add_argument("--no-dashboard", action="store_true", help="Disable live dashboard")
+    parser.add_argument("--red-blue", action="store_true", help="Run both red and blue agents together")
+    args = parser.parse_args()
+
+    if args.red_blue:
+        run_red_blue()
+    else:
+        run_red(dashboard=not args.no_dashboard)
 
 
 if __name__ == "__main__":

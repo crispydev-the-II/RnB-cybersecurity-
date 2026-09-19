@@ -53,6 +53,14 @@ class DashboardState:
         self.event_count = 0
         self.agent_email = "—"
 
+        # ── Blue Agent State ───────────────────────────────────────────────
+        self.blue_running = False
+        self.blue_breach_detected = False
+        self.blue_patch_history = []   # {vuln, status, description, timestamp}
+        self.blue_vuln_status = {}     # vuln_id -> status string
+        self.blue_detections = []      # {vuln, description, severity}
+        self.blue_mode = "red"         # "red" | "blue" | "red-blue"
+
         self._subscribe()
 
     def _subscribe(self):
@@ -129,6 +137,65 @@ class DashboardState:
         e.on('graph_edge', on_edge)
         e.on('escalation_step', on_step)
         e.on('target_reached', on_target)
+
+        # ── Blue Agent Events ──────────────────────────────────────────────
+        def on_blue_start(etype, data):
+            with self._lock:
+                self.blue_running = True
+                self.blue_mode = data.get('mode', 'daemon')
+
+        def on_blue_snapshot_start(etype, data):
+            with self._lock:
+                self.blue_running = True
+                self.blue_mode = 'snapshot'
+
+        def on_anomaly(etype, data):
+            with self._lock:
+                d = {
+                    'vuln': data.get('vuln', '?'),
+                    'description': data.get('description', '?'),
+                    'severity': data.get('severity', 'medium'),
+                    'rule_id': data.get('rule_id', ''),
+                }
+                self.blue_detections.insert(0, d)
+                self.blue_detections = self.blue_detections[:20]
+
+        def on_patch_attempt(etype, data):
+            with self._lock:
+                vuln = data.get('vuln', '?')
+                self.blue_vuln_status[vuln] = 'patching'
+
+        def on_patch_applied(etype, data):
+            with self._lock:
+                vuln = data.get('vuln', '?')
+                status = data.get('status', 'unknown')
+                self.blue_vuln_status[vuln] = 'patched' if status == 'applied' else status
+                self.blue_patch_history.insert(0, {
+                    'vuln': vuln,
+                    'status': status,
+                    'description': data.get('description', ''),
+                    'timestamp': data.get('timestamp', ''),
+                })
+                self.blue_patch_history = self.blue_patch_history[:20]
+
+        def on_breach(etype, data):
+            with self._lock:
+                self.blue_breach_detected = True
+
+        def on_patch_all_complete(etype, data):
+            with self._lock:
+                for vuln in data.get('patched', []):
+                    self.blue_vuln_status[vuln] = 'patched'
+                for vuln in data.get('already_patched', []):
+                    self.blue_vuln_status[vuln] = 'already_patched'
+
+        e.on('blue_start', on_blue_start)
+        e.on('blue_snapshot_start', on_blue_snapshot_start)
+        e.on('anomaly_detected', on_anomaly)
+        e.on('patch_attempt', on_patch_attempt)
+        e.on('patch_applied', on_patch_applied)
+        e.on('breach_detected', on_breach)
+        e.on('patch_all_complete', on_patch_all_complete)
 
 def render_scan_panel(state):
     """Left panel: endpoint scanner progress + recent probes."""
@@ -358,6 +425,80 @@ def render_target_panel(state):
     return panel
 
 
+def render_blue_panel(state):
+    """Blue agent status panel — vulnerability patch tracker."""
+    from rich.table import Table
+
+    with state._lock:
+        vuln_status = dict(state.blue_vuln_status)
+        patch_history = list(state.blue_patch_history)
+        detections = list(state.blue_detections)
+        breach = state.blue_breach_detected
+        running = state.blue_running
+        mode = state.blue_mode
+
+    # Vulnerability status grid
+    table = Table(title="[bold]VULNERABILITY STATUS[/bold]", expand=False, box=None,
+                  header_style="bold blue", border_style="blue", show_header=True)
+    table.add_column("Vuln", width=8, style="bold")
+    table.add_column("Status", width=14)
+    table.add_column("Description", min_width=40)
+
+    VULN_DESCS = {
+        "V1": "OAuth token leakage",
+        "V2": "File IDOR",
+        "V3": "API key scope escalation",
+        "V4": "Job result enumeration",
+        "V5": "Webhook replay attack",
+        "V6": "Stripe webhook bypass",
+        "V7": "Path traversal",
+        "V8": "Email tracking pixel",
+        "V9": "OAuth CSRF",
+        "V10": "Admin role escalation",
+    }
+
+    for vuln in ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10"]:
+        status = vuln_status.get(vuln, "unpatched")
+        if status == "unpatched":
+            style = "red"
+            label = "[red]UNPATCHED[/red]"
+        elif status == "patching":
+            style = "yellow"
+            label = "[yellow]PATCHING...[/yellow]"
+        elif status in ("applied", "patched"):
+            style = "green"
+            label = "[green]PATCHED[/green]"
+        elif status == "already_patched":
+            style = "cyan"
+            label = "[cyan]FIXED[/cyan]"
+        else:
+            style = "dim"
+            label = f"[dim]{status}[/dim]"
+
+        table.add_row(
+            f"[bold]{vuln}[/bold]",
+            label,
+            f"[dim]{VULN_DESCS.get(vuln, '')}[/dim]",
+        )
+
+    # Mode / breach indicator
+    if breach:
+        status_bar = "[bold red on white]  BREACH DETECTED — EMERGENCY PATCH IN PROGRESS  [/]"
+    elif running:
+        status_bar = f"[bold blue]BLUE AGENT: {mode.upper()} MODE[/bold blue]"
+    else:
+        status_bar = "[dim]Blue Agent: not running[/dim]"
+
+    from rich.console import Group
+    panel = Panel(
+        Group(table, f"\n{status_bar}"),
+        title="[bold blue]BLUE AGENT STATUS[/bold blue]",
+        border_style="blue",
+        padding=(1, 1),
+    )
+    return panel
+
+
 def make_layout(state):
     """Build the full rich Layout."""
     from rich.layout import Layout as RLayout
@@ -367,7 +508,8 @@ def make_layout(state):
     layout.split_column(
         RLayout(name="header", size=3),
         RLayout(name="main"),
-        RLayout(name="attack", size=12),
+        RLayout(name="attack", size=10),
+        RLayout(name="blue", size=10),
         RLayout(name="target", size=8),
     )
     layout["main"].split_row(
@@ -421,6 +563,7 @@ def render(state):
         render_deviation_panel(state),
         render_graph_panel(state),
         render_attack_panel(state),
+        render_blue_panel(state),
         render_target_panel(state),
     )
 
@@ -443,8 +586,9 @@ def run_dashboard():
 
             # Check if all stages done
             with state._lock:
-                if state.target_reached and state.scan_done:
-                    # Keep display alive for a moment
+                # Exit when scan is done — target may or may not be reached
+                # (in red-blue mode, patches may block the target)
+                if state.scan_done:
                     time.sleep(1)
                     break
 

@@ -60,11 +60,16 @@ saas-project/
 └── saas-agent/        ← The red team agent (attacker)
     ├── run_agent.py   ← Orchestrator — runs all 4 stages in sequence
     ├── event_emitter.py ← Publish/subscribe system for live dashboard
-    ├── dashboard.py   ← Live terminal visualization
+    ├── dashboard.py   ← Live terminal visualization (all agents)
     ├── stage1_scanner.py    ← Probes every endpoint
     ├── stage2_deviation.py ← Finds anomalies in responses
     ├── stage3_graph.py      ← Builds permission ladder graph
     ├── stage4_chain.py      ← Validates attack path live
+    │
+    └── blue/          ← The blue team agent (defender)
+        ├── blue_agent.py    ← Monitor + detect + auto-patch loop
+        ├── patcher.py       ← Source-level vulnerability fixes
+        ├── detector.py      ← Anomaly detection rules
     └── output/        ← Generated attack reports
 ```
 
@@ -109,6 +114,8 @@ pip install -r requirements.txt
 - python-dotenv
 - networkx (for graph operations)
 - rich (for live terminal dashboard)
+- psutil (for server restart after patching)
+- pyyaml (for config patching)
 
 ---
 
@@ -206,8 +213,68 @@ While running, the terminal shows a rich live-updating dashboard:
 │  [1] V6: Webhook Bypass            [SUCCESS]                   │
 │  [2] V10: Role Management           [SUCCESS]                   │
 │  [3] Target: /internal/api-keys      [SUCCESS]                   │
+├─────────────────────────────────────────────────────────────────┤
+│  BLUE AGENT STATUS                                                │
+│  V1 UNPATCHED  V2 UNPATCHED  V3 UNPATCHED  V4 UNPATCHED  ...   │
+│  Blue Agent: not running                                         │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Blue Agent — Autonomous Defender
+
+The blue agent monitors the red agent's activity in real-time, detects exploitation attempts, and automatically patches vulnerabilities at the source code level.
+
+### Modes
+
+```bash
+# Continuous monitoring — patches vulnerabilities as the red agent finds them
+python run_blue.py
+
+# One-shot audit — scan all vulnerabilities and report status, no patching
+python run_blue.py --audit
+
+# Apply all patches immediately and exit
+python run_blue.py --patch-all
+
+# Run both agents simultaneously — red attacks while blue defends
+python run_agent.py --red-blue
+```
+
+### What It Does
+
+| Component | Role |
+|-----------|------|
+| `blue_agent.py` | Main loop — subscribes to red agent events, triggers patches |
+| `detector.py` | Maps red agent event patterns to vulnerability IDs |
+| `patcher.py` | Source-level patches on `saas-env/main.py` — changes persist on restart |
+
+### Patch Map
+
+Every vulnerability gets a targeted source edit:
+
+| Vuln | Fix Applied |
+|------|-------------|
+| V1 | OAuth tokens removed from webhook payload dict |
+| V2 | Ownership check added to `get_file()` |
+| V3 | Admin scope requires existing admin role; no auto-promotion |
+| V4 | Ownership check added to `get_job()` |
+| V5 | Timestamp + nonce added to `_trigger_webhook` |
+| V6 | DEV_MODE bypass removed, signature validation enforced |
+| V7 | Filename sanitized via `Path(filename).name` |
+| V8 | Email tracking disabled in `config.yaml` |
+| V9 | OAuth state parameter validated |
+| V10 | Admins cannot assign `system` role |
+
+### Red vs Blue Mode
+
+When both agents run together, the dashboard shows a live battle:
+
+- **Red** probes endpoints and escalates through vulnerabilities
+- **Blue** watches for exploitation patterns and patches in real-time
+- The target may or may not be reached depending on whether blue patches fast enough
+- After a breach, blue triggers emergency patch of all remaining vulnerabilities
 
 ---
 
@@ -226,19 +293,18 @@ cd "D:\saas project capstone final"
 
 git init
 git add .
-git commit -m "Initial commit: Nexus Red Agent v1.0
+git commit -m "Nexus Red vs Blue Agent v2.0
 
-- saas-env: Simulated SaaS with planted vulnerabilities
+- saas-env: Simulated SaaS with planted vulnerabilities (V1-V10)
 - saas-agent: 4-stage autonomous red team agent
-- Live terminal dashboard with rich
+- blue/: Autonomous defender agent with auto-patching
+- Live terminal dashboard with rich (all agents)
 - Full attack chain: user -> admin -> system -> target"
 
 git remote add origin https://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@github.com/crispydev-the-II/RnB-cybersecurity-.git
 git branch -M main
 git push -u origin main
 ```
-
-Replace `YOUR_USERNAME` with your GitHub username in the remote URL.
 
 ---
 
